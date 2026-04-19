@@ -1,0 +1,25 @@
+# Camera calibration template.
+# TODO: replace these dashcam defaults with real per-camera calibration before
+#       running the depth/area pipeline on production data.
+
+resolution:
+  width: 1280
+  height: 720
+
+# Intrinsic matrix K (row-major 3x3 list). Leave null to derive from FOV:
+#   fx = fy = 0.5 * width / tan(0.5 * hfov)
+#   cx = width / 2, cy = height / 2
+K: null
+horizontal_fov_deg: 60.0
+
+# Mounting geometry w.r.t. the flat road plane in front of the vehicle.
+mount:
+  height_m: 1.2         # camera height above ground
+  pitch_deg: -5.0       # downward tilt (negative = looking at road)
+  roll_deg: 0.0
+  yaw_deg: 0.0
+
+# Pipeline assumes images are already undistorted; update if raw lens data is used.
+distortion:
+  model: none           # none | plumb_bob | fisheye
+  coeffs: []
