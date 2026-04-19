@@ -1,0 +1,73 @@
+# Pothole depth/area pipeline — default configuration.
+
+paths:
+  data_root: data/raw
+  annotations: data/annotations
+  calibration: data/calibration/camera.yaml
+  checkpoints: experiments/checkpoints
+  outputs: experiments/results
+
+image:
+  target_width: 1280
+  target_height: 720
+
+segmentation:
+  model: yolov8m-seg.pt
+  finetuned_weights: experiments/checkpoints/seg/best.pt
+  conf_threshold: 0.35
+  iou_threshold: 0.5
+  classes: [pothole]
+  train:
+    epochs: 100
+    batch_size: 16
+    imgsz: 1280
+    lr0: 0.001
+    device: 0
+
+depth:
+  model_id: depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf
+  device: cuda
+  # Clip range in meters for sanity (outdoor road scenes).
+  min_depth_m: 0.5
+  max_depth_m: 80.0
+
+plane_fitting:
+  ransac_threshold_m: 0.02      # 2 cm inlier distance.
+  max_iterations: 1000
+  min_inlier_ratio: 0.7
+  min_points: 1000
+  # Camera up axis in its own frame; normal of road plane must be close to this.
+  up_axis: [0.0, -1.0, 0.0]
+  up_cos_threshold: 0.9
+  offset_percentile: 95         # Reported depth = p95 of |offset| inside mask.
+
+homography:
+  # Placeholder — recomputed per-image if lane detection enabled.
+  method: calibration            # one of: calibration, lanes
+  lane_width_m: 3.5
+
+# Severity thresholds — aligned with GOST R 50597-2017.
+# A pothole is classified at the highest severity whose depth_m OR area_m2 is exceeded.
+severity:
+  thresholds:
+    - name: minor
+      max_depth_m: 0.02
+      max_area_m2: 0.05
+    - name: moderate
+      max_depth_m: 0.05
+      max_area_m2: 0.25
+    - name: major
+      max_depth_m: 0.10
+      max_area_m2: 1.00
+    - name: critical
+      max_depth_m: .inf
+      max_area_m2: .inf
+
+visualization:
+  colors:
+    minor:    [0, 255, 0]
+    moderate: [0, 255, 255]
+    major:    [0, 128, 255]
+    critical: [0, 0, 255]
+  alpha: 0.5
+  dpi: 300

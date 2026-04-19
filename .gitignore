@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Data — keep tree, ignore blobs
+data/raw/**
+!data/raw/.gitkeep
+data/annotations/**
+!data/annotations/.gitkeep
+
+# Experiments
+experiments/checkpoints/**
+!experiments/checkpoints/.gitkeep
+experiments/results/**
+!experiments/results/.gitkeep
+experiments/notebooks/.ipynb_checkpoints/
+runs/
+wandb/
+tensorboard/
+
+# Model weights
+*.pt
+*.pth
+*.onnx
+*.engine
+*.safetensors
+
+# Large media
+*.mp4
+*.mov
+*.avi
