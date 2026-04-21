@@ -71,7 +71,7 @@ python -c "import torch, ultralytics, transformers, cv2"
 # 3. prepare data (RDD2022 root already downloaded)
 python scripts/prepare_data.py \
     --rdd-root data/raw/RDD2022 \
-    --output data/annotations \
+    --out-root data \
     --generate-masks \
     --sam2-model facebook/sam2-hiera-large
 
