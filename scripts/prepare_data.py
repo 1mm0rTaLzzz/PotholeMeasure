@@ -1,17 +1,35 @@
-"""Convert RDD2022 VOC annotations into a COCO pothole dataset.
+"""Convert an RDD2022-style dataset into the project's COCO pothole layout.
 
-Steps:
-    1. Scan the RDD2022 tree for VOC XMLs with D40 (pothole) objects.
-    2. Stratified 70/15/15 split by pothole-count bucket.
-    3. Resize images to target resolution (default 1280x720) and scale boxes.
-    4. Optionally run SAM2 on each bbox to emit polygon segmentation.
-    5. Emit ``train.json`` / ``val.json`` / ``test.json`` in COCO format.
+Two input formats are supported:
 
-Example:
+``--format voc``  (default)
+    Raw RDD2022 VOC layout — the script scans for ``annotations/**/*.xml``,
+    filters ``<name>`` == ``--target-class`` (D40 by default), then does a
+    stratified 70/15/15 split by pothole-count bucket.
+
+``--format yolo``
+    Pre-split YOLO layout::
+
+        <rdd_root>/{train,val,test}/images/*.jpg
+        <rdd_root>/{train,val,test}/labels/*.txt  # YOLO: cls cx cy w h
+
+    Splits are taken as-is; each label line is filtered by ``--class-id``
+    (default ``3`` = D40 in the common RDD ordering D00/D10/D20/D40).
+
+Either way the output is::
+
+    <out-root>/annotations/{train,val,test}.json   # COCO
+    <out-root>/processed/{train,val,test}/*.jpg    # resized images
+
+Example (VOC)::
+
+    python scripts/prepare_data.py --rdd-root /data/RDD2022 --out-root data --generate-masks
+
+Example (YOLO pre-split)::
+
     python scripts/prepare_data.py \\
-        --rdd-root /data/RDD2022 \\
-        --out-root data \\
-        --generate-masks
+        --rdd-root /data/rdd2022 --format yolo --class-id 3 \\
+        --out-root data --generate-masks
 """
 from __future__ import annotations
 
@@ -25,13 +43,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data.coco import build_coco, write_coco
 from src.data.splits import box_count_bucket, stratified_split
-from src.data.voc import scan_rdd
+from src.data.voc import POTHOLE_CLASS, scan_rdd
+from src.data.yolo_rdd import scan_yolo_rdd
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--rdd-root", type=Path, required=True, help="root of the RDD2022 dataset")
+    p.add_argument("--rdd-root", type=Path, required=True, help="root of the dataset")
     p.add_argument("--out-root", type=Path, default=Path("data"), help="output root (annotations + processed images)")
+    p.add_argument("--format", choices=("voc", "yolo"), default="voc", help="input annotation format")
+    p.add_argument("--target-class", default=POTHOLE_CLASS, help="[voc] VOC <name> to keep (default: D40)")
+    p.add_argument("--class-id", type=int, default=3, help="[yolo] class id to keep (default: 3 = D40)")
     p.add_argument("--width", type=int, default=1280)
     p.add_argument("--height", type=int, default=720)
     p.add_argument("--seed", type=int, default=42)
@@ -41,17 +63,35 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _collect_splits(args: argparse.Namespace) -> dict[str, list]:
+    if args.format == "voc":
+        samples = scan_rdd(args.rdd_root, target_class=args.target_class)
+        logging.info("scanned %d samples with %r objects", len(samples), args.target_class)
+        if not samples:
+            raise SystemExit(
+                f"no {args.target_class!r} samples found — check --rdd-root layout "
+                f"(see the class-distribution log above; override with --target-class if needed)"
+            )
+        train, val, test = stratified_split(samples, key=box_count_bucket, seed=args.seed)
+        return {"train": train, "val": val, "test": test}
+
+    # --format yolo
+    splits = scan_yolo_rdd(args.rdd_root, target_class_id=args.class_id)
+    total = sum(len(v) for v in splits.values())
+    if total == 0:
+        raise SystemExit(
+            f"no samples for class-id={args.class_id} in {args.rdd_root}/(train|val|test)/labels "
+            f"— check the YOLO class-distribution log above and pass --class-id accordingly"
+        )
+    return splits
+
+
 def main() -> None:
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    samples = scan_rdd(args.rdd_root)
-    logging.info("scanned %d samples with D40 objects", len(samples))
-    if not samples:
-        raise SystemExit("no D40 samples found — check --rdd-root layout")
-
-    train, val, test = stratified_split(samples, key=box_count_bucket, seed=args.seed)
-    logging.info("split sizes: train=%d val=%d test=%d", len(train), len(val), len(test))
+    splits = _collect_splits(args)
+    logging.info("split sizes: %s", {k: len(v) for k, v in splits.items()})
 
     mask_generator = None
     if args.generate_masks:
@@ -62,7 +102,10 @@ def main() -> None:
 
     ann_dir = args.out_root / "annotations"
     processed_dir = args.out_root / "processed"
-    for name, subset in (("train", train), ("val", val), ("test", test)):
+    for name, subset in splits.items():
+        if not subset:
+            logging.warning("split %s is empty — skipping", name)
+            continue
         coco = build_coco(
             subset,
             (args.width, args.height),

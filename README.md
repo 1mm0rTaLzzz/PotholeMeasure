@@ -68,12 +68,18 @@ pip install -r requirements.txt
 # 2. sanity check
 python -c "import torch, ultralytics, transformers, cv2"
 
-# 3. prepare data (RDD2022 root already downloaded)
+# 3. prepare data
+# 3a. raw RDD2022 (VOC XML, needs stratified split)
 python scripts/prepare_data.py \
     --rdd-root data/raw/RDD2022 \
     --out-root data \
-    --generate-masks \
-    --sam2-model facebook/sam2-hiera-large
+    --generate-masks --sam2-model facebook/sam2-hiera-large
+
+# 3b. pre-split YOLO layout (train/val/test/{images,labels}/)
+python scripts/prepare_data.py \
+    --rdd-root data/raw/rdd2022 --format yolo --class-id 3 \
+    --out-root data \
+    --generate-masks --sam2-model facebook/sam2-hiera-large
 
 # 4. fine-tune segmentation
 python scripts/train_segmentation.py --config configs/default.yaml
