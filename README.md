@@ -1,46 +1,61 @@
 # PotholeMeasure
 
-Pipeline for detecting road potholes and estimating their **depth** (as offset
-from a RANSAC-fitted road plane over a monocular metric-depth map) and
-**area** (via homography to bird's-eye view). Potholes are classified by
-severity in accordance with GOST R 50597-2017.
+Pipeline for detecting road potholes and estimating their **depth** (as the
+offset from a RANSAC-fitted road plane over a monocular metric-depth map) and
+**area** (via a ground-plane homography to bird's-eye view). Potholes are
+classified by severity in accordance with **GOST R 50597-2017**.
+
+The main idea that makes the approach reliable with a single camera is to
+**never trust absolute monocular depth** — instead, fit a local road plane
+with RANSAC on points outside the pothole masks and report the pothole depth
+as the signed offset from that plane. This cancels the scale drift that
+plagues monocular metric depth models.
 
 ## Pipeline
 
 ```
-image ─► YOLOv8-seg  ──► masks
-      ─► Depth Anything V2 Metric ──► depth map (m)
-      ─► Homography (template or lanes) ──► BEV
-                     │
-                     ▼
-            RANSAC road plane (on non-pothole points)
-                     │
-                     ▼
-   per mask: depth = p95(|plane − depth|),
-             area  = BEV polygon area,
-             severity by GOST R 50597 thresholds
-                     │
-                     ▼
-            JSON + visualisation
+image ─► YOLOv8-seg                    ──► instance masks
+      ─► Depth Anything V2 Metric      ──► metric depth (m)
+      ─► Homography (calibration/lanes)──► BEV (m)
+                        │
+                        ▼
+                RANSAC road plane on non-pothole 3D points
+                        │
+                        ▼
+     per mask:  depth_m = p95(|signed distance to plane|)
+                area_m2 = polygon area in BEV
+                severity = GOST R 50597 buckets (depth ∨ area)
+                        │
+                        ▼
+                JSON + visualisation (2D overlay / 3-panel / Open3D)
 ```
 
 ## Project layout
 
 ```
-configs/        YAML configs
+configs/default.yaml           paths, thresholds, plane-fit params
 data/
-  raw/          input images (RDD2022)
-  annotations/  COCO JSON (train/val/test)
-  calibration/  camera intrinsics + mounting
+  raw/                         RDD2022 images
+  annotations/                 COCO train/val/test
+  calibration/camera.yaml      dashcam template (H, pitch, FOV)
 src/
-  models/       segmentation, depth
-  geometry/     plane fitting, homography, metrics
-  pipeline.py   end-to-end class
-  classifier.py severity thresholds
-  visualize.py  overlays, 3D view
-scripts/        prepare_data, train, run_inference, evaluate
-experiments/    checkpoints, notebooks
-tests/          unit tests
+  data/                        VOC→COCO, SAM2 pseudo-masks, YOLO export
+  models/                      segmentation (YOLOv8-seg), depth (DA V2)
+  geometry/                    plane_fitting, homography, metrics
+  pipeline.py                  PotholePipeline.process(image)
+  classifier.py                GOST R 50597 severity buckets
+  evaluation.py                ablation recipes + runner
+  visualize.py                 overlays, 3-panel, Open3D
+scripts/
+  prepare_data.py              RDD2022 → COCO (+SAM2 masks)
+  train_segmentation.py        YOLOv8 fine-tune
+  run_inference.py             folder/image → JSON + visualisation
+  evaluate.py                  ablation → CSV / LaTeX
+experiments/
+  notebooks/demo.ipynb         end-to-end walkthrough on a single image
+  checkpoints/                 best.pt drops here
+  results/                     ablation CSVs / .tex
+tests/                         56 unit tests (see §Testing)
 ```
 
 ## Quick start
@@ -51,35 +66,85 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # 2. sanity check
-python -c "import torch; print(torch.cuda.is_available())"
+python -c "import torch, ultralytics, transformers, cv2"
 
-# 3. (later phases) prepare dataset, train, inference
-python scripts/prepare_data.py --dataset rdd2022
+# 3. prepare data (RDD2022 root already downloaded)
+python scripts/prepare_data.py \
+    --rdd-root data/raw/RDD2022 \
+    --output data/annotations \
+    --generate-masks \
+    --sam2-model facebook/sam2-hiera-large
+
+# 4. fine-tune segmentation
 python scripts/train_segmentation.py --config configs/default.yaml
-python scripts/run_inference.py --input path/to/image.jpg --output results/
+
+# 5. single image / folder inference
+python scripts/run_inference.py \
+    --config configs/default.yaml \
+    --input path/to/image_or_folder \
+    --output experiments/results/run1
+
+# 6. ablation table for the paper
+python scripts/evaluate.py \
+    --config configs/default.yaml \
+    --gt data/annotations/test_gt.json \
+    --output experiments/results/ablation.csv --latex
 ```
 
-## Phased development
+## Configuration
 
-| # | Phase | Status |
-|---|---|---|
-| 1 | Environment scaffold | in progress |
-| 2 | Data preparation (RDD2022 + SAM2 pseudo-masks) | todo |
-| 3 | Instance segmentation (YOLOv8-seg) | todo |
-| 4 | Metric depth (Depth Anything V2) | todo |
-| 5 | RANSAC road plane + depth offset | todo |
-| 6 | Homography + area in m² | todo |
-| 7 | Severity classifier (GOST R 50597) | todo |
-| 8 | End-to-end pipeline + inference script | todo |
-| 9 | Visualisation | todo |
-| 10 | Experiments, ablations, metrics | todo |
-| 11 | Tests + docs | todo |
+`configs/default.yaml` drives every stage. The pieces that matter for the
+measurement quality:
 
-Execution order: `1 → 2 → 3 → 4 → 5 → 6 → 8 → 7 → 9 → 10 → 11`.
+- `plane_fitting.ransac_threshold_m` (default `0.02`) — inlier distance in m.
+- `plane_fitting.min_inlier_ratio` (`0.7`) — reject frames where the plane
+  covers less than 70% of the non-pothole pixels.
+- `plane_fitting.up_cos` (`0.9`) — the plane normal must be within ~25° of the
+  gravity axis; a sanity check that avoids fitting walls / car hoods.
+- `severity.thresholds.depth_m` / `area_m2` — GOST R 50597 bucket edges. The
+  final severity is the worse of the two buckets.
+
+Calibration lives in `data/calibration/camera.yaml`; replace the dashcam
+defaults (H = 1.2 m, FOV = 60°, pitch = −5°) with a real calibration when one
+is available.
+
+## Ablation recipes
+
+`scripts/evaluate.py` runs every recipe on the same detections and emits
+MAE / RMSE / severity F1:
+
+| recipe                       | depth signal                                        |
+|------------------------------|-----------------------------------------------------|
+| `midas_relative_scaled`      | relative depth rescaled by 5/95-percentiles (drift) |
+| `metric_no_plane`            | `max − min` of the metric depth inside the mask     |
+| `metric_plane_offset`        | **ours** — p95 of `|distance to RANSAC plane|`     |
+
+Severity F1 is reported when a classifier is passed; area in m² is always the
+BEV polygon area.
+
+## Testing
+
+```
+pytest -q
+# 56 passed
+```
+
+- `test_plane_fitting.py` — **critical**: synthetic plane + 8 cm pit,
+  end-to-end recovery within 0.5 cm.
+- `test_homography.py` — 1 m² target recovered within 15%.
+- `test_classifier.py` — GOST buckets, worst-of-two rule.
+- `test_pipeline.py` — end-to-end with mocked segmentor / depth model.
+- `test_metrics_and_ablation.py` — regression + classification metrics,
+  `run_ablation` sanity on a synthetic pit.
+
+The heavy deps (`torch`, `ultralytics`, `transformers`, `open3d`) are imported
+lazily inside functions, so the pure-logic tests and `--help` work on a
+minimal install.
 
 ## References
 
 - Depth Anything V2 (Metric Outdoor): https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf
 - Ultralytics YOLOv8 segmentation: https://docs.ultralytics.com/tasks/segment/
+- SAM2: https://github.com/facebookresearch/sam2
 - RDD2022 dataset: https://github.com/sekilab/RoadDamageDetector
 - GOST R 50597-2017 — pavement defect thresholds.
