@@ -52,9 +52,10 @@ def draw_results(
             color = _severity_color(p.severity, colors)
             x0, y0, x1, y1 = [int(round(v)) for v in p.bbox]
             cv2.rectangle(blended, (x0, y0), (x1, y1), color, 2)
+            depth_str = f"{p.depth_m * 100:.1f} cm" if p.depth_m and p.depth_m > 1e-4 else "n/a"
             label_lines = [
                 f"{p.severity or '?'}",
-                f"d={p.depth_m * 100:.1f} cm  a={p.area_m2:.2f} m²",
+                f"d={depth_str}  a={p.area_m2:.2f} m^2",
                 f"conf={p.confidence:.2f}",
             ]
             _draw_label_block(blended, label_lines, anchor=(x0, max(0, y0 - 4)), color=color)

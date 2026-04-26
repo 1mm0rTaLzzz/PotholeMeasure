@@ -39,6 +39,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--input-dir", type=Path, required=True, help="folder of test images")
     p.add_argument("--output", type=Path, default=Path("experiments/results/ablation"))
     p.add_argument("--max-images", type=int, default=0, help="0 = all")
+    p.add_argument(
+        "--clip-quantile",
+        type=float,
+        default=0.99,
+        help="clip outliers above this quantile per recipe in the violin plot (1.0 = no clipping)",
+    )
     return p.parse_args()
 
 
@@ -163,13 +169,19 @@ def main() -> None:
         import matplotlib.pyplot as plt
 
         names = [r["recipe"] for r in summary]
-        data = [per_recipe[n] for n in names]
+        data = []
+        for n in names:
+            vals = np.asarray(per_recipe[n], dtype=np.float64)
+            if 0.0 < args.clip_quantile < 1.0 and vals.size:
+                hi = float(np.quantile(vals, args.clip_quantile))
+                vals = vals[vals <= hi]
+            data.append(vals.tolist() or [0.0])
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.violinplot(data, showmeans=True, showmedians=True)
         ax.set_xticks(range(1, len(names) + 1))
         ax.set_xticklabels(names, rotation=15)
         ax.set_ylabel("predicted depth (m)")
-        ax.set_title("Recipe comparison on test set (no GT)")
+        ax.set_title(f"Recipe comparison on test set (clip q={args.clip_quantile})")
         ax.grid(axis="y", alpha=0.3)
         png_path = args.output / "relative_ablation.png"
         fig.tight_layout()

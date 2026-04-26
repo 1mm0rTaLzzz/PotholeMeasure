@@ -70,3 +70,22 @@ def test_severity_bucket_parses_inf_string() -> None:
 def test_classify_pothole_rejects_empty_buckets() -> None:
     with pytest.raises(ValueError):
         classify_pothole(0.0, 0.0, [])
+
+
+def test_area_only_signal_ignores_depth(thresholds) -> None:
+    classify = make_severity_classifier(thresholds, signal="area_only")
+    # Depth would say critical; area says moderate.
+    assert classify(0.99, 0.20) == "moderate"
+    # Area-only critical regardless of depth.
+    assert classify(0.0, 1.50) == "critical"
+
+
+def test_depth_only_signal_ignores_area(thresholds) -> None:
+    classify = make_severity_classifier(thresholds, signal="depth_only")
+    assert classify(0.03, 99.0) == "moderate"
+    assert classify(0.99, 0.0) == "critical"
+
+
+def test_unknown_signal_rejected(thresholds) -> None:
+    with pytest.raises(ValueError):
+        make_severity_classifier(thresholds, signal="bogus")(0.0, 0.0)

@@ -157,7 +157,10 @@ class PotholePipeline:
         if sev_cfg:
             from src.classifier import make_severity_classifier
 
-            classifier = make_severity_classifier(sev_cfg["thresholds"])
+            classifier = make_severity_classifier(
+                sev_cfg["thresholds"],
+                signal=str(sev_cfg.get("signal", "max")),
+            )
 
         return cls(
             segmentor=segmentor,

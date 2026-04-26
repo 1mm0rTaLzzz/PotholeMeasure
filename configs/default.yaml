@@ -19,7 +19,7 @@ segmentation:
   # --hf-repo keremberke/yolov8s-pothole-segmentation`
   # which writes experiments/checkpoints/seg/keremberke_yolov8s.pt.
   finetuned_weights: experiments/checkpoints/seg/best.pt
-  conf_threshold: 0.30           # 0.30 is sane after fine-tune; raise if fine-tune was skipped
+  conf_threshold: 0.50           # filters most low-confidence FPs (manholes, patches)
   iou_threshold: 0.5
   classes: [pothole]
   train:
@@ -67,6 +67,12 @@ road_filter:
 # Severity thresholds — aligned with GOST R 50597-2017.
 # A pothole is classified at the highest severity whose depth_m OR area_m2 is exceeded.
 severity:
+  # Which signal drives the bucketing:
+  #   max         worst of (depth bucket, area bucket) — full GOST rule.
+  #   area_only   only area is used — recommended when monocular depth is
+  #               unreliable on your dataset (e.g. RDD2022 dashcam crops).
+  #   depth_only  only depth is used.
+  signal: area_only
   thresholds:
     - name: minor
       max_depth_m: 0.02
