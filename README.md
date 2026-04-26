@@ -81,7 +81,18 @@ python scripts/prepare_data.py \
     --out-root data \
     --generate-masks --sam2-model facebook/sam2-hiera-large
 
-# 4. fine-tune segmentation
+# 4. segmentation weights — pick ONE of the following:
+
+# 4a. (recommended) drop in a pretrained pothole checkpoint and skip training.
+#     keremberke/yolov8s-pothole-segmentation has mAP@0.5 ≈ 0.99 on its val set
+#     and is single-class "pothole", so it loads straight into the pipeline.
+python scripts/download_pretrained.py \
+    --hf-repo keremberke/yolov8s-pothole-segmentation
+# → writes experiments/checkpoints/seg/keremberke_yolov8s-pothole-segmentation.pt
+# Update configs/default.yaml → segmentation.finetuned_weights to that path.
+
+# 4b. fine-tune on your own data (start from the pretrained checkpoint above to
+#     converge in ~20 epochs instead of 100 from COCO weights).
 python scripts/train_segmentation.py --config configs/default.yaml
 
 # 5. single image / folder inference

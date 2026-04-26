@@ -12,13 +12,20 @@ image:
   target_height: 720
 
 segmentation:
+  # Generic COCO-pretrained backbone used as a fallback / fine-tuning starting point.
   model: yolov8m-seg.pt
+  # Best-trained pothole checkpoint. To skip training entirely, point this at a
+  # pothole-pretrained .pt — e.g. `python scripts/download_pretrained.py
+  # --hf-repo keremberke/yolov8s-pothole-segmentation`
+  # which writes experiments/checkpoints/seg/keremberke_yolov8s.pt.
   finetuned_weights: experiments/checkpoints/seg/best.pt
   conf_threshold: 0.35
   iou_threshold: 0.5
   classes: [pothole]
   train:
-    epochs: 100
+    # Fine-tuning from a pothole-pretrained checkpoint converges in ~20 epochs;
+    # bump to 100 only when training from COCO weights.
+    epochs: 30
     batch_size: 16
     imgsz: 1280
     lr0: 0.001

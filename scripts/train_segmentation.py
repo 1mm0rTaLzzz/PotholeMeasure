@@ -33,6 +33,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--skip-convert", action="store_true", help="reuse existing YOLO layout")
     p.add_argument("--project", type=Path, default=Path("experiments/runs/seg"))
     p.add_argument("--name", default="train")
+    p.add_argument(
+        "--init",
+        type=Path,
+        default=None,
+        help="initialization weights (overrides config.segmentation.model). "
+             "Pointing this at a pothole-pretrained .pt cuts training time drastically.",
+    )
     return p.parse_args()
 
 
@@ -72,7 +79,9 @@ def main() -> None:
 
     from ultralytics import YOLO
 
-    model = YOLO(seg_cfg["model"])
+    init_weights = args.init or seg_cfg["model"]
+    logging.info("initialising YOLO from %s", init_weights)
+    model = YOLO(str(init_weights))
     results = model.train(
         data=str(data_yaml),
         epochs=train_cfg.get("epochs", 100),
