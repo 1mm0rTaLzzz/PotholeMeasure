@@ -21,6 +21,26 @@ def _flatten_polygon(coords: list[float], width: int, height: int) -> list[float
     return out
 
 
+def _materialise_image(src: Path, dst: Path, prefer_symlink: bool) -> None:
+    """Place ``src`` at ``dst``. Tries symlink (cheap) then falls back to copy.
+
+    Windows refuses symlink creation without Developer Mode / admin
+    (``WinError 1314``); silently fall back to ``shutil.copy2`` there.
+    A broken symlink left over from a previous failed run is replaced.
+    """
+    if dst.is_symlink() and not dst.exists():
+        dst.unlink()
+    if dst.exists():
+        return
+    if prefer_symlink:
+        try:
+            dst.symlink_to(src.resolve())
+            return
+        except (OSError, NotImplementedError):
+            pass  # fall through to copy
+    shutil.copy2(src, dst)
+
+
 def coco_to_yolo(
     coco_json: Path,
     images_dir: Path,
@@ -46,11 +66,7 @@ def coco_to_yolo(
         if not src.exists():
             continue
         dst = out_images_dir / img["file_name"]
-        if not dst.exists():
-            if symlink_images:
-                dst.symlink_to(src.resolve())
-            else:
-                shutil.copy2(src, dst)
+        _materialise_image(src, dst, prefer_symlink=symlink_images)
 
         label_path = out_labels_dir / (Path(img["file_name"]).stem + ".txt")
         lines: list[str] = []
