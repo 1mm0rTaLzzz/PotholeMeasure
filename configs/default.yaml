@@ -19,7 +19,8 @@ segmentation:
   # --hf-repo keremberke/yolov8s-pothole-segmentation`
   # which writes experiments/checkpoints/seg/keremberke_yolov8s.pt.
   finetuned_weights: experiments/checkpoints/seg/best.pt
-  conf_threshold: 0.50           # filters most low-confidence FPs (manholes, patches)
+  conf_threshold: 0.35           # 0.30-0.40 sweet spot post-finetune; bump to 0.5 for paper-grade
+                                 # screenshots, drop to 0.25 if you want more recall
   iou_threshold: 0.5
   classes: [pothole]
   train:
