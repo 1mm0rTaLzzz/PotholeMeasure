@@ -65,6 +65,36 @@ def test_discover_layout_split_dirs(tmp_path: Path) -> None:
     assert found["valid"][0].label_path.exists()
 
 
+def test_roboflow_naming_pairs_depth_by_timestamp(tmp_path: Path) -> None:
+    """PothRGBD-on-Kaggle pattern:
+        images/<TS>_color_png.rf.<HASH>.jpg
+        depths/<TS>_depth.npy
+        labels/<TS>_color_png.rf.<HASH>.txt
+    """
+    import cv2
+
+    rgb_dir = tmp_path / "images"
+    depth_dir = tmp_path / "depths"
+    label_dir = tmp_path / "labels"
+    for d in (rgb_dir, depth_dir, label_dir):
+        d.mkdir(parents=True)
+
+    ts = "20250227_135438"
+    rgb_stem = f"{ts}_color_png.rf.984e9768"
+    cv2.imwrite(str(rgb_dir / f"{rgb_stem}.jpg"), np.zeros((48, 64, 3), dtype=np.uint8))
+    np.save(depth_dir / f"{ts}_depth.npy", np.full((48, 64), 1.5, dtype=np.float32))
+    (label_dir / f"{rgb_stem}.txt").write_text("0 0.3 0.3 0.7 0.3 0.7 0.7 0.3 0.7\n")
+
+    found = discover_pothrgbd(tmp_path)
+    assert "all" in found
+    assert len(found["all"]) == 1
+    s = found["all"][0]
+    assert s.depth_path.name == f"{ts}_depth.npy"
+    # auto-detect: float .npy -> metres, no rescaling.
+    d = load_depth_metres(s.depth_path)
+    assert abs(float(d.mean()) - 1.5) < 1e-3
+
+
 def test_discover_layout_flat(tmp_path: Path) -> None:
     _write_dummy(
         rgb_dir=tmp_path / "images",

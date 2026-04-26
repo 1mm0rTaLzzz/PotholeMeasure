@@ -39,28 +39,68 @@ class PothRGBDSample:
     masks: list[np.ndarray] = field(default_factory=list, repr=False)
 
 
+def _roboflow_base(stem: str) -> str:
+    """Strip Roboflow's ``_color_png.rf.<hash>`` (or ``_color.rf.<hash>``) suffix
+    to recover the original capture timestamp / id used by the depth files.
+
+    Example::
+
+        20250227_135438_color_png.rf.984e9768... -> 20250227_135438
+
+    Returns the input unchanged when the marker is not present.
+    """
+    if ".rf." in stem:
+        stem = stem.split(".rf.")[0]
+    for suffix in ("_color_png", "_color", "_rgb", "_jpg"):
+        if stem.endswith(suffix):
+            return stem[: -len(suffix)]
+    return stem
+
+
+def _depth_candidates(stem: str) -> list[str]:
+    """All filename stems that could refer to the same capture as ``stem``."""
+    base = _roboflow_base(stem)
+    out = [stem, base]
+    for suf in ("_depth", "-depth", ".depth", "_d"):
+        out.append(f"{stem}{suf}")
+        out.append(f"{base}{suf}")
+    # Dedup while preserving order.
+    seen: set[str] = set()
+    return [s for s in out if not (s in seen or seen.add(s))]
+
+
 def _find_depth_for(rgb_path: Path) -> Path | None:
     """Locate the depth image paired with ``rgb_path`` under common Roboflow /
     PothRGBD conventions."""
-    stem = rgb_path.stem
     parent = rgb_path.parent
-    # 1) Sibling folder named depth/Depth/...
+    candidates = _depth_candidates(rgb_path.stem)
+    extensions = (".npy", ".png", ".tif", ".exr")
+
+    # 1) Sibling folder named depth/depths/Depth/...
     for sibling in DEPTH_DIR_NAMES:
-        for ext in (".png", ".tif", ".npy", ".exr"):
-            candidate = parent.parent / sibling / f"{stem}{ext}"
-            if candidate.exists():
-                return candidate
+        sib_dir = parent.parent / sibling
+        if not sib_dir.is_dir():
+            continue
+        for cand_stem in candidates:
+            for ext in extensions:
+                p = sib_dir / f"{cand_stem}{ext}"
+                if p.exists():
+                    return p
+
     # 2) Same folder, suffix-based naming (e.g. <stem>_depth.png).
-    for suffix in ("_depth", "-depth", ".depth"):
-        for ext in (".png", ".tif", ".npy", ".exr"):
-            candidate = parent / f"{stem}{suffix}{ext}"
-            if candidate.exists():
-                return candidate
+    for cand_stem in candidates:
+        if cand_stem == rgb_path.stem:
+            continue
+        for ext in extensions:
+            p = parent / f"{cand_stem}{ext}"
+            if p.exists():
+                return p
+
     # 3) Same stem, different extension: <stem>.png vs <stem>.jpg.
     if rgb_path.suffix.lower() != ".png":
-        candidate = parent / f"{stem}.png"
-        if candidate.exists() and candidate != rgb_path:
-            return candidate
+        p = parent / f"{rgb_path.stem}.png"
+        if p.exists() and p != rgb_path:
+            return p
     return None
 
 
@@ -103,21 +143,33 @@ def parse_yolo_seg_label(path: Path, width: int, height: int) -> list[np.ndarray
     return masks
 
 
-def load_depth_metres(depth_path: Path, scale: float = 0.001) -> np.ndarray:
+def load_depth_metres(depth_path: Path, scale: float | None = None) -> np.ndarray:
     """Load a depth image and return metres as ``float32``.
 
-    ``scale`` converts the on-disk units to metres. D415 native is mm, so
-    the default ``0.001`` is correct for the PothRGBD release. ``.npy``
-    files are assumed already in metres unless the caller overrides.
+    ``scale`` is the multiplier from on-disk units to metres. When ``None``,
+    units are auto-detected:
+
+    * ``.npy`` with integer dtype  -> assume mm, scale = 0.001
+    * ``.npy`` with float dtype    -> assume metres already, scale = 1.0
+    * ``.png`` / ``.tif`` (16-bit) -> D415 native mm, scale = 0.001
+
+    Pass ``scale`` explicitly to override (e.g. when units are cm or
+    deci-millimetres).
     """
     if depth_path.suffix.lower() == ".npy":
-        return np.load(depth_path).astype(np.float32)
+        arr = np.load(depth_path)
+        if scale is None:
+            scale = 0.001 if np.issubdtype(arr.dtype, np.integer) else 1.0
+        return (arr.astype(np.float32) * float(scale))
+
     import cv2
 
     raw = cv2.imread(str(depth_path), cv2.IMREAD_ANYDEPTH | cv2.IMREAD_UNCHANGED)
     if raw is None:
         raise FileNotFoundError(f"could not decode depth image {depth_path}")
-    return raw.astype(np.float32) * scale
+    if scale is None:
+        scale = 0.001
+    return raw.astype(np.float32) * float(scale)
 
 
 def discover_pothrgbd(root: Path) -> dict[str, list[PothRGBDSample]]:

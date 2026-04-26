@@ -42,8 +42,9 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--src", type=Path, required=True, help="root of the unzipped PothRGBD download")
     p.add_argument("--out-root", type=Path, default=Path("data/pothrgbd"))
-    p.add_argument("--depth-scale", type=float, default=0.001,
-                   help="multiplier from depth-image units to metres (D415 PNG = mm = 0.001)")
+    p.add_argument("--depth-scale", type=float, default=None,
+                   help="multiplier from depth-image units to metres; default auto-detects "
+                        "(int .npy/PNG -> mm = 0.001, float .npy -> metres = 1.0)")
     p.add_argument("--target-size", type=int, nargs=2, default=None, metavar=("W", "H"),
                    help="resize RGB+masks to this WxH; default keeps native 640x480")
     p.add_argument("--severity-config", type=Path, default=Path("configs/default.yaml"))
@@ -144,7 +145,10 @@ def main() -> None:
         for s in iter_loaded(samples):
             rgb = cv2.imread(str(s.rgb_path))
             try:
-                depth = load_depth_metres(s.depth_path, scale=args.depth_scale)
+                depth = load_depth_metres(
+                    s.depth_path,
+                    scale=args.depth_scale,   # None -> auto-detect inside loader
+                )
             except FileNotFoundError as e:
                 logging.warning("skipping %s: %s", s.rgb_path, e)
                 continue
