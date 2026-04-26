@@ -28,7 +28,9 @@ param(
     [switch] $SkipFinetune,
     [switch] $SkipInference,
     [switch] $SkipAblation,
-    [switch] $SkipFigures
+    [switch] $SkipFigures,
+    [switch] $SkipBenchmark,
+    [int]    $BenchmarkN  = 100
 )
 
 $ErrorActionPreference = "Stop"
@@ -115,19 +117,32 @@ if (-not $SkipAblation) {
 
 # ----- 7. Figures ------------------------------------------------------------
 if (-not $SkipFigures) {
-    Step ("6/6 make_paper_figures (out: " + $infOut + "\figures)")
+    Step ("6/7 make_paper_figures (out: " + $infOut + "\figures)")
     python scripts/make_paper_figures.py --inference-dir $infOut
     if ($LASTEXITCODE -ne 0) { throw "make_paper_figures failed" }
 } else {
-    Step "6/6 SKIPPED (figures)"
+    Step "6/7 SKIPPED (figures)"
+}
+
+# ----- 8. Benchmark ----------------------------------------------------------
+$benchOut = Join-Path $Out "benchmark.json"
+if (-not $SkipBenchmark) {
+    Step ("7/7 benchmark (" + $BenchmarkN + " images)")
+    python scripts/benchmark.py --input-dir data\processed\test --num $BenchmarkN --output $benchOut
+    if ($LASTEXITCODE -ne 0) { throw "benchmark failed" }
+} else {
+    Step "7/7 SKIPPED (benchmark)"
 }
 
 Write-Host ""
 Write-Host "==================== DONE ====================" -ForegroundColor Green
 Write-Host ("Inference JSON+viz : " + $infOut)
 Write-Host ("Ablation table     : " + $ablOut + "\relative_ablation.tex")
+Write-Host ("Area distribution  : " + $infOut + "\figures\area_distribution.png")
+Write-Host ("Severity stats tex : " + $infOut + "\figures\severity_area_stats.tex")
 Write-Host ("Severity grid      : " + $infOut + "\figures\severity_grid.jpg")
 Write-Host ("Hero figure        : " + $infOut + "\figures\hero.jpg")
+Write-Host ("Benchmark report   : " + $benchOut)
 Write-Host ""
 Write-Host "For a real (GT-backed) MAE/RMSE table, hand-measure ~30 potholes," -ForegroundColor Yellow
 Write-Host "save them as data\annotations\test_gt.json (schema in scripts\evaluate.py)," -ForegroundColor Yellow

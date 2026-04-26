@@ -20,6 +20,71 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 SEVERITY_ORDER = ("minor", "moderate", "major", "critical")
+SEVERITY_COLORS = {
+    "minor":    "#2ecc71",
+    "moderate": "#f1c40f",
+    "major":    "#e67e22",
+    "critical": "#e74c3c",
+}
+
+
+def _emit_area_distribution(by_sev: dict, stats: dict, out_dir: Path) -> None:
+    """Histogram of area_m2 per severity bucket + LaTeX table of stats."""
+    import numpy as np
+
+    # LaTeX summary.
+    tex = out_dir / "severity_area_stats.tex"
+    with tex.open("w") as f:
+        f.write("\\begin{tabular}{lrrrrrr}\n\\toprule\n")
+        f.write("severity & n & mean (m^2) & median (m^2) & p95 (m^2) & std (m^2) & max (m^2) \\\\\n\\midrule\n")
+        for sev in SEVERITY_ORDER:
+            s = stats.get(sev) or {}
+            if s.get("n", 0) == 0:
+                f.write(f"{sev} & 0 & - & - & - & - & - \\\\\n")
+                continue
+            a = s["area_m2"]
+            f.write(
+                f"{sev} & {s['n']} & {a['mean']:.3f} & {a['median']:.3f} & "
+                f"{a['p95']:.3f} & {a['std']:.3f} & {a['max']:.3f} \\\\\n"
+            )
+        f.write("\\bottomrule\n\\end{tabular}\n")
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    has_data = False
+    for sev in SEVERITY_ORDER:
+        entries = by_sev.get(sev, [])
+        if not entries:
+            continue
+        areas = np.asarray([e[2].get("area_m2", 0.0) for e in entries], dtype=np.float64)
+        # Clip the long tail so a few critical outliers don't flatten the histogram.
+        clip_hi = float(np.quantile(areas, 0.99)) if len(areas) > 5 else float(areas.max())
+        areas = areas[areas <= max(clip_hi, 1e-3)]
+        if not areas.size:
+            continue
+        has_data = True
+        ax.hist(
+            areas, bins=30, alpha=0.55,
+            label=f"{sev} (n={len(entries)})",
+            color=SEVERITY_COLORS.get(sev, "#888"),
+            edgecolor="black", linewidth=0.5,
+        )
+    if has_data:
+        ax.set_xlabel("BEV area (m^2)")
+        ax.set_ylabel("count")
+        ax.set_title("Area distribution by severity bucket")
+        ax.legend()
+        ax.grid(axis="y", alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(out_dir / "area_distribution.png", dpi=180)
+        plt.close(fig)
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,13 +142,29 @@ def main() -> None:
             continue
         depths = [e[2].get("depth_m", 0.0) for e in entries]
         areas = [e[2].get("area_m2", 0.0) for e in entries]
+        a = np.asarray(areas, dtype=np.float64)
+        d = np.asarray(depths, dtype=np.float64)
         stats[sev] = {
             "n": len(entries),
-            "mean_depth_m": float(np.mean(depths)),
-            "mean_area_m2": float(np.mean(areas)),
+            "area_m2": {
+                "mean":   float(a.mean()),
+                "median": float(np.median(a)),
+                "p95":    float(np.percentile(a, 95)),
+                "std":    float(a.std(ddof=0)),
+                "min":    float(a.min()),
+                "max":    float(a.max()),
+            },
+            "depth_m": {
+                "mean":   float(d.mean()),
+                "median": float(np.median(d)),
+                "p95":    float(np.percentile(d, 95)),
+            },
         }
     (out_dir / "stats.json").write_text(json.dumps(stats, indent=2))
     logging.info("severity counts: %s", {k: v["n"] for k, v in stats.items()})
+
+    # Area distribution per severity bucket — histogram + LaTeX table.
+    _emit_area_distribution(by_sev, stats, out_dir)
 
     # Hero: detection with largest score across the whole run.
     everyone.sort(key=lambda x: -x[0])
