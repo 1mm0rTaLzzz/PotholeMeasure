@@ -19,7 +19,7 @@ segmentation:
   # --hf-repo keremberke/yolov8s-pothole-segmentation`
   # which writes experiments/checkpoints/seg/keremberke_yolov8s.pt.
   finetuned_weights: experiments/checkpoints/seg/best.pt
-  conf_threshold: 0.35
+  conf_threshold: 0.10           # keremberke pretrained outputs lower scores; 0.35 was too strict
   iou_threshold: 0.5
   classes: [pothole]
   train:

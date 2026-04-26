@@ -48,9 +48,13 @@ src/
   visualize.py                 overlays, 3-panel, Open3D
 scripts/
   prepare_data.py              RDD2022 → COCO (+SAM2 masks)
-  train_segmentation.py        YOLOv8 fine-tune
+  download_pretrained.py       fetch a pothole-pretrained YOLOv8-seg .pt
+  train_segmentation.py        YOLOv8 fine-tune (--init <weights>)
   run_inference.py             folder/image → JSON + visualisation
-  evaluate.py                  ablation → CSV / LaTeX
+  evaluate.py                  ablation w/ ground truth → CSV / LaTeX
+  relative_ablation.py         per-recipe descriptive stats (no GT needed)
+  make_paper_figures.py        severity grid + hero from inference output
+run_all.ps1                    one-shot driver (Windows PowerShell)
 experiments/
   notebooks/demo.ipynb         end-to-end walkthrough on a single image
   checkpoints/                 best.pt drops here
@@ -58,7 +62,40 @@ experiments/
 tests/                         56 unit tests (see §Testing)
 ```
 
-## Quick start
+## One-shot run for the paper (Windows PowerShell)
+
+After `pip install -r requirements.txt`, drop your RDD2022 tree into
+`data\raw\RDD2022\` and run:
+
+```powershell
+.\run_all.ps1
+```
+
+That orchestrates: `prepare_data` → `download_pretrained` → short fine-tune
+→ inference on `data\processed\test` → relative ablation → severity-grid
+figure. All artefacts land in `experiments\results\paper\`:
+
+| file | purpose |
+|---|---|
+| `inference\json\<stem>.json` | per-image detections w/ depth_m, area_m2, severity |
+| `inference\viz\<stem>.jpg`   | severity-coloured overlays |
+| `inference\figures\severity_grid.jpg` | 2x2 paper figure (one example per bucket) |
+| `inference\figures\hero.jpg` | teaser image |
+| `ablation\relative_ablation.tex` | LaTeX table of per-recipe stats |
+| `ablation\relative_ablation.png` | violin plot per recipe |
+
+Common knobs:
+
+```powershell
+.\run_all.ps1 -SkipFinetune                              # keremberke weights only
+.\run_all.ps1 -HfRepo keremberke/yolov8m-pothole-segmentation -Epochs 30
+.\run_all.ps1 -SkipDataPrep -SkipMasks                   # iterate on inference only
+```
+
+Real MAE/RMSE numbers require ground-truth depth/area — see "Ground truth"
+below.
+
+## Quick start (manual, cross-platform)
 
 ```bash
 # 1. environment
@@ -101,12 +138,39 @@ python scripts/run_inference.py \
     --input path/to/image_or_folder \
     --output experiments/results/run1
 
-# 6. ablation table for the paper
+# 6a. relative ablation (no GT needed — descriptive stats per recipe)
+python scripts/relative_ablation.py \
+    --input-dir data/processed/test \
+    --output experiments/results/run1/ablation
+
+# 6b. paper figures (severity grid + hero)
+python scripts/make_paper_figures.py \
+    --inference-dir experiments/results/run1
+
+# 6c. ablation with ground truth → real MAE / RMSE / severity F1
 python scripts/evaluate.py \
     --config configs/default.yaml \
     --gt data/annotations/test_gt.json \
     --output experiments/results/ablation.csv --latex
 ```
+
+## Ground truth for the publishable MAE/RMSE table
+
+`scripts/evaluate.py` needs per-pothole physical measurements that RDD2022
+doesn't provide. Two ways to obtain them:
+
+1. **Hand-measure ~30 potholes** with a tape (or chalk grid for area). Record
+   `depth_m`, `area_m2`, `severity` per pothole, plus the path to the binary
+   mask PNG. Save as `data/annotations/test_gt.json` — schema is in the
+   docstring of `scripts/evaluate.py`. 30 points is enough for a workshop
+   submission.
+2. **Use a public RGB-D pothole dataset** (e.g. PothRGBD, arXiv 2505.04207)
+   that ships per-pothole depth/area; convert to the same JSON schema and
+   point `--gt` at it.
+
+Without GT you can still report `relative_ablation.py` results — they show
+that the three recipes produce different distributions on the same
+detections, which is enough to motivate the method qualitatively.
 
 ## Configuration
 
