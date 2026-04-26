@@ -20,7 +20,7 @@ param(
     [string] $Out           = "experiments\results\paper",
     [string] $HfRepo        = "keremberke/yolov8s-pothole-segmentation",
     [int]    $Epochs        = 20,
-    [double] $ConfThreshold = 0.10,
+    [double] $ConfThreshold = 0.30,
     [int]    $MaxAblation   = 200,
     [switch] $SkipDataPrep,
     [switch] $SkipMasks,

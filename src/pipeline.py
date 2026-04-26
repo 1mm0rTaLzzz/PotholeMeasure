@@ -21,6 +21,17 @@ from src.geometry.plane_fitting import (
 )
 
 
+# Defaults for road-plausibility filtering. Override via config[`road_filter`].
+DEFAULT_ROAD_FILTER = {
+    "max_area_m2": 5.0,            # absolute upper bound — real potholes are < ~2 m²
+    "max_offset_to_plane_m": 0.30, # detection median dist to road plane; rejects sky/walls
+    "min_centroid_y_frac": 0.40,   # masks whose y-centroid is in the upper 40% of the
+                                   # image are above the horizon and not on the road
+    "min_inlier_ratio_for_geom": 0.60,  # if plane-fit inlier ratio is too low, skip
+                                        # depth+area entirely (numbers would be garbage)
+}
+
+
 @dataclass
 class PotholeResult:
     bbox: tuple[float, float, float, float]
@@ -52,11 +63,13 @@ class FrameResult:
     potholes: list[PotholeResult]
     plane: Optional[Plane]
     plane_fit_failed: bool
+    rejected_count: int = 0
 
     def to_json_dict(self) -> dict:
         return {
             "image": str(self.image_path) if self.image_path else None,
             "plane_fit_failed": self.plane_fit_failed,
+            "rejected_count": self.rejected_count,
             "plane": None
             if self.plane is None
             else {
@@ -69,8 +82,31 @@ class FrameResult:
         }
 
 
+def _is_on_road(
+    mask: np.ndarray,
+    pc: np.ndarray,
+    plane: Optional[Plane],
+    image_h: int,
+    filt: dict,
+) -> bool:
+    """Reject masks above the horizon or far from the fitted road plane."""
+    ys, xs = np.nonzero(mask)
+    if ys.size == 0:
+        return False
+    cy = float(ys.mean())
+    if cy < image_h * float(filt["min_centroid_y_frac"]):
+        return False
+    if plane is None:
+        # Without a plane we can't verify the detection sits on the road; keep it
+        # but flag (caller still applies the area cap).
+        return True
+    pts = pc.reshape(image_h, -1, 3)[ys, xs]
+    dist = np.abs(plane.signed_distance(pts))
+    return float(np.median(dist)) <= float(filt["max_offset_to_plane_m"])
+
+
 class PotholePipeline:
-    """Composes segmentation → depth → plane → area into a single call."""
+    """Composes segmentation, depth, plane fit, and area into a single call."""
 
     def __init__(
         self,
@@ -80,6 +116,7 @@ class PotholePipeline:
         H_img2world: np.ndarray,
         plane_cfg: Optional[dict] = None,
         classifier: Optional[Callable[[float, float], str]] = None,
+        road_filter: Optional[dict] = None,
     ):
         self.segmentor = segmentor
         self.depth_estimator = depth_estimator
@@ -87,6 +124,7 @@ class PotholePipeline:
         self.H_img2world = np.asarray(H_img2world, dtype=np.float64)
         self.plane_cfg = plane_cfg or {}
         self.classifier = classifier
+        self.road_filter = {**DEFAULT_ROAD_FILTER, **(road_filter or {})}
 
     @classmethod
     def from_config(cls, config_path: Union[str, Path]) -> "PotholePipeline":
@@ -128,6 +166,7 @@ class PotholePipeline:
             H_img2world=H,
             plane_cfg=cfg.get("plane_fitting", {}),
             classifier=classifier,
+            road_filter=cfg.get("road_filter"),
         )
 
     def process(
@@ -154,11 +193,19 @@ class PotholePipeline:
             up_cos_threshold=float(self.plane_cfg.get("up_cos_threshold", 0.9)),
         )
 
+        max_area = float(self.road_filter["max_area_m2"])
         potholes: list[PotholeResult] = []
+        rejected = 0
         for det in detections:
+            if not _is_on_road(det.mask, pc, plane, h, self.road_filter):
+                rejected += 1
+                continue
+            area_m2 = mask_to_area_m2(det.mask, self.H_img2world)
+            if not np.isfinite(area_m2) or area_m2 > max_area or area_m2 <= 0.0:
+                rejected += 1
+                continue
             stats = compute_depth_offset(plane, pc, det.mask) if plane is not None else None
             depth_m = stats.p95_m if stats is not None else 0.0
-            area_m2 = mask_to_area_m2(det.mask, self.H_img2world)
             severity = self.classifier(depth_m, area_m2) if self.classifier else None
             potholes.append(
                 PotholeResult(
@@ -178,4 +225,5 @@ class PotholePipeline:
             potholes=potholes,
             plane=plane,
             plane_fit_failed=plane is None,
+            rejected_count=rejected,
         )

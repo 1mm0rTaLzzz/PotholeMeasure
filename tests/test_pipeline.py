@@ -102,6 +102,53 @@ def test_pipeline_reports_plane_failure_gracefully() -> None:
     assert frame.potholes == []
 
 
+def test_pipeline_rejects_above_horizon_detection() -> None:
+    """A mask whose centroid sits in the top 40% of the image is rejected."""
+    h, w = 240, 320
+    K = intrinsics_from_fov(w, h, 60.0)
+    H = compute_homography_from_calibration(K, camera_height_m=1.2, pitch_deg=-5.0)
+    depth = _flat_depth(K, h, w)
+
+    mask = np.zeros((h, w), dtype=bool)
+    mask[20:60, 100:200] = True   # tree-shaped mask high in the image
+    detection = PotholeDetection(mask=mask, bbox=(100.0, 20.0, 200.0, 60.0), score=0.95)
+
+    pipeline = PotholePipeline(
+        segmentor=_FakeSegmentor([detection]),
+        depth_estimator=_FakeDepth(depth),
+        K=K, H_img2world=H,
+        plane_cfg={"min_points": 500, "min_inlier_ratio": 0.5},
+    )
+    frame = pipeline.process(np.zeros((h, w, 3), dtype=np.uint8))
+    assert frame.potholes == []
+    assert frame.rejected_count == 1
+
+
+def test_pipeline_rejects_runaway_area() -> None:
+    """A mask that projects to absurd m² is dropped before reaching the JSON."""
+    h, w = 240, 320
+    K = intrinsics_from_fov(w, h, 60.0)
+    H = compute_homography_from_calibration(K, camera_height_m=1.2, pitch_deg=-5.0)
+    depth = _flat_depth(K, h, w)
+
+    # Centroid below the horizon (so the y-frac filter passes), but huge mask
+    # spanning a wide low strip — projects to many m².
+    mask = np.zeros((h, w), dtype=bool)
+    mask[200:235, 5:315] = True
+    detection = PotholeDetection(mask=mask, bbox=(5.0, 200.0, 315.0, 235.0), score=0.9)
+
+    pipeline = PotholePipeline(
+        segmentor=_FakeSegmentor([detection]),
+        depth_estimator=_FakeDepth(depth),
+        K=K, H_img2world=H,
+        plane_cfg={"min_points": 500, "min_inlier_ratio": 0.5},
+        road_filter={"max_area_m2": 1.0},  # tighter cap to force rejection
+    )
+    frame = pipeline.process(np.zeros((h, w, 3), dtype=np.uint8))
+    assert frame.potholes == []
+    assert frame.rejected_count == 1
+
+
 def test_frame_result_serialises_to_json() -> None:
     h, w = 120, 160
     K = intrinsics_from_fov(w, h, 60.0)

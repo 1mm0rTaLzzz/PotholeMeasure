@@ -19,7 +19,7 @@ segmentation:
   # --hf-repo keremberke/yolov8s-pothole-segmentation`
   # which writes experiments/checkpoints/seg/keremberke_yolov8s.pt.
   finetuned_weights: experiments/checkpoints/seg/best.pt
-  conf_threshold: 0.10           # keremberke pretrained outputs lower scores; 0.35 was too strict
+  conf_threshold: 0.30           # 0.30 is sane after fine-tune; raise if fine-tune was skipped
   iou_threshold: 0.5
   classes: [pothole]
   train:
@@ -52,6 +52,17 @@ homography:
   # Placeholder — recomputed per-image if lane detection enabled.
   method: calibration            # one of: calibration, lanes
   lane_width_m: 3.5
+
+# Post-segmentation sanity filter. Drops detections that are clearly NOT
+# on the road (above the horizon, too far from the fitted plane, or that
+# project to absurd areas via the homography). With a domain-shifted
+# pretrained model these would otherwise produce rubbish like
+# `area_m2 = 17000000` on a tree above the road.
+road_filter:
+  max_area_m2: 5.0               # absolute upper bound on a single pothole
+  max_offset_to_plane_m: 0.30    # detection median |dist to plane|
+  min_centroid_y_frac: 0.40      # mask centroid must be in lower 60% of the image
+  min_inlier_ratio_for_geom: 0.60
 
 # Severity thresholds — aligned with GOST R 50597-2017.
 # A pothole is classified at the highest severity whose depth_m OR area_m2 is exceeded.
