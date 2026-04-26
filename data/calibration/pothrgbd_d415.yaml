@@ -1,0 +1,25 @@
+# Intel RealSense D415 default intrinsics for the PothRGBD release (640x480).
+# These are factory-typical values for the colour stream; replace with the
+# per-camera calibration from the original capture if it's published.
+
+resolution:
+  width: 640
+  height: 480
+
+# fx = fy ~= 0.5 * width / tan(0.5 * 69.4 deg) ~= 462 — measured factory
+# default for the D415 RGB sensor at 640x480 is closer to:
+K:
+  - [605.0,   0.0, 320.0]
+  - [  0.0, 605.0, 240.0]
+  - [  0.0,   0.0,   1.0]
+
+# Mounting is irrelevant when ground-plane is fitted from depth; leave defaults.
+mount:
+  height_m: 1.0
+  pitch_deg: -10.0
+  roll_deg: 0.0
+  yaw_deg: 0.0
+
+distortion:
+  model: none
+  coeffs: []

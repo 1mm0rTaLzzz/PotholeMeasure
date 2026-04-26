@@ -154,7 +154,48 @@ python scripts/evaluate.py \
     --output experiments/results/ablation.csv --latex
 ```
 
-## Ground truth for the publishable MAE/RMSE table
+## PothRGBD (RGB-D ground truth) for the headline MAE/RMSE table
+
+If you want a publishable Table 1 (MAE / RMSE / severity F1) without
+hand-measuring potholes yourself, the [PothRGBD dataset](https://www.kaggle.com/datasets/mahyeks/pothrgbd-rgb-and-depth-images-of-potholes)
+ships 1000 RGB+depth pairs collected with an Intel RealSense D415, with
+YOLOv8-seg polygon labels.
+
+### One-shot run
+
+```powershell
+# 1. unzip the Kaggle download to data\raw\pothrgbd (or any path)
+# 2. point the orchestrator at it
+.\run_pothrgbd.ps1 -Src data\raw\pothrgbd
+```
+
+This:
+
+1. auto-detects the Roboflow-style folder layout (`train/{images,labels,depth}` etc.),
+2. fits a road plane on each frame and computes per-pothole **GT depth (m)**
+   (p95 of |signed distance to plane|) and **GT area (m²)** (sum of per-pixel
+   BEV area through the GT depth + intrinsics),
+3. writes:
+   - `data\pothrgbd\processed\<split>\*.jpg`
+   - `data\pothrgbd\masks\<split>\*.png`
+   - `data\pothrgbd\test_gt.json`  ← consumed by `evaluate.py`
+   - `data\pothrgbd\calibration.yaml`  (D415 defaults; replace with the
+     real per-camera calibration if it ships in the dataset),
+4. runs the full pipeline + `evaluate.py` against the GT and emits
+   `experiments\results\pothrgbd\evaluate.csv` + `.tex`.
+
+### Manual flow (cross-platform)
+
+```bash
+python scripts/import_pothrgbd.py --src /path/to/pothrgbd --out-root data/pothrgbd
+python scripts/run_inference.py --input data/pothrgbd/processed/test --output experiments/results/pothrgbd/inference
+python scripts/evaluate.py --gt data/pothrgbd/test_gt.json --output experiments/results/pothrgbd/evaluate.csv --latex
+```
+
+The depth scale defaults to D415 native (mm → m via 0.001). Override
+with `--depth-scale` if your depth files are in different units.
+
+## Other ground truth options
 
 `scripts/evaluate.py` needs per-pothole physical measurements that RDD2022
 doesn't provide. Two ways to obtain them:
