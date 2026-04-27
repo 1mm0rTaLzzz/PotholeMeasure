@@ -1,36 +1,25 @@
-"""Measure inference speed of the full pothole pipeline.
+"""Benchmark multiple pothole instance-segmentation models in one run.
 
-Reports per-stage and end-to-end timings averaged over a folder of images.
-The numbers are paper-friendly: mean / median / p95 latency in ms and the
-corresponding FPS for the end-to-end loop.
-
-Stages timed separately:
-    seg     YOLOv8-seg forward pass
-    depth   Depth Anything V2 metric forward pass
-    geom    plane fit + per-mask depth offset + BEV area + classifier
-    total   sum of the above plus any small overheads inside .process()
-
-A short warm-up phase (default 3 images) is excluded from the report.
-
-Example::
-
-    python scripts/benchmark.py \\
-        --config configs/default.yaml \\
-        --input-dir data\\processed\\test \\
-        --num 100 --output experiments\\results\\paper\\benchmark.json
+Adds paper-oriented protocol controls:
+- repeated runs with aggregated mean/std/95% CI
+- optional COCO metrics beyond headline mAP (APs/APm/APl)
+- PR-curve points export
+- runtime environment capture (CUDA, torch, driver)
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import math
+import random
 import statistics
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 
 SUPPORTED_EXT = {".jpg", ".jpeg", ".png", ".bmp"}
 
@@ -39,13 +28,16 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
     p.add_argument("--input-dir", type=Path, required=True, help="folder of test images")
+    p.add_argument("--annotations", type=Path, default=None, help="COCO JSON for segm mAP (optional)")
     p.add_argument("--num", type=int, default=100, help="number of images to time (after warmup)")
     p.add_argument("--warmup", type=int, default=3)
+    p.add_argument("--repeats", type=int, default=1, help="number of repeated benchmark runs")
+    p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output", type=Path, default=Path("experiments/results/benchmark.json"))
     return p.parse_args()
 
 
-def _summary(samples: list[float]) -> dict:
+def _summary(samples: list[float]) -> dict[str, float | int]:
     if not samples:
         return {"n": 0}
     return {
@@ -58,105 +50,274 @@ def _summary(samples: list[float]) -> dict:
     }
 
 
+def _aggregate(repeat_values: list[float]) -> dict[str, float | int]:
+    if not repeat_values:
+        return {"n": 0}
+    n = len(repeat_values)
+    mean = statistics.mean(repeat_values)
+    std = statistics.stdev(repeat_values) if n > 1 else 0.0
+    ci95 = 1.96 * std / math.sqrt(n) if n > 1 else 0.0
+    return {"n": n, "mean": float(mean), "std": float(std), "ci95": float(ci95)}
+
+
+def _rle_encode(mask: "np.ndarray") -> dict[str, Any]:
+    from pycocotools import mask as mask_utils
+
+    rle = mask_utils.encode(mask.astype("uint8", copy=False, order="F"))
+    rle["counts"] = rle["counts"].decode("utf-8")
+    return rle
+
+
+def _run_yolo(model_cfg: dict[str, Any], image: "np.ndarray") -> tuple[list[dict[str, Any]], float]:
+    model = model_cfg["_model"]
+    ts = time.perf_counter()
+    results = model.predict(
+        source=image,
+        conf=float(model_cfg.get("conf", 0.25)),
+        iou=float(model_cfg.get("iou", 0.5)),
+        imgsz=int(model_cfg.get("imgsz", 1280)),
+        device=str(model_cfg.get("device", "cuda")),
+        verbose=False,
+    )
+    dt = time.perf_counter() - ts
+    if not results:
+        return [], dt
+    r0 = results[0]
+    if r0.masks is None or len(r0.masks) == 0:
+        return [], dt
+    masks = r0.masks.data.cpu().numpy().astype(bool)
+    scores = r0.boxes.conf.cpu().numpy()
+    labels = r0.boxes.cls.cpu().numpy().astype(int)
+    return [
+        {"mask": masks[i], "score": float(scores[i]), "category_id": int(labels[i]) + 1}
+        for i in range(len(masks))
+    ], dt
+
+
+def _run_mmdet(model_cfg: dict[str, Any], image_path: Path) -> tuple[list[dict[str, Any]], float]:
+    inferencer = model_cfg["_model"]
+    ts = time.perf_counter()
+    out = inferencer(str(image_path), return_vis=False, no_save_pred=True)
+    dt = time.perf_counter() - ts
+
+    preds = out.get("predictions", [])
+    if not preds:
+        return [], dt
+    p0 = preds[0]
+    masks = p0.get("masks", []) or []
+    scores = p0.get("scores", []) or []
+    labels = p0.get("labels", []) or []
+
+    detections = []
+    for m, s, c in zip(masks, scores, labels):
+        if float(s) < float(model_cfg.get("conf", 0.25)):
+            continue
+        detections.append({"mask": m, "score": float(s), "category_id": int(c) + 1})
+    return detections, dt
+
+
+def _load_models(model_cfgs: list[dict[str, Any]]) -> None:
+    from ultralytics import YOLO
+
+    for cfg in model_cfgs:
+        family = cfg["family"].lower()
+        if family == "yolo":
+            cfg["_model"] = YOLO(str(cfg["weights"]))
+            continue
+        if family == "mmdet":
+            from mmdet.apis import DetInferencer
+
+            cfg["_model"] = DetInferencer(
+                model=str(cfg["config"]),
+                weights=str(cfg["weights"]),
+                device=str(cfg.get("device", "cuda")),
+            )
+            continue
+        raise ValueError(f"unsupported model family: {family}")
+
+
+def _apply_protocol(model_cfgs: list[dict[str, Any]], protocol: dict[str, Any]) -> None:
+    allow_override = bool(protocol.get("allow_model_overrides", False))
+    for cfg in model_cfgs:
+        for key in ("conf", "iou", "imgsz", "device"):
+            if key in protocol and (not allow_override or key not in cfg):
+                cfg[key] = protocol[key]
+
+
+def _environment_info() -> dict[str, Any]:
+    import platform
+
+    import torch
+
+    info: dict[str, Any] = {
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "torch": torch.__version__,
+        "cuda_available": bool(torch.cuda.is_available()),
+    }
+    if torch.cuda.is_available():
+        info.update(
+            {
+                "cuda_device": torch.cuda.get_device_name(0),
+                "cuda_device_count": torch.cuda.device_count(),
+                "cuda_version": torch.version.cuda,
+                "cudnn_version": torch.backends.cudnn.version(),
+            }
+        )
+    return info
+
+
 def main() -> None:
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     import cv2
+    import numpy as np
+    import yaml
 
-    from src.geometry.homography import mask_to_area_m2
-    from src.geometry.plane_fitting import compute_depth_offset, depth_to_pointcloud, fit_road_plane
-    from src.pipeline import PotholePipeline
+    random.seed(args.seed)
+    np.random.seed(args.seed)
 
-    pipeline = PotholePipeline.from_config(args.config)
-    plane_cfg = pipeline.plane_cfg
+    cfg = yaml.safe_load(args.config.read_text())
+    bench_cfg = cfg.get("benchmark", {})
+    protocol = bench_cfg.get("protocol", {})
+    model_cfgs: list[dict[str, Any]] = bench_cfg.get("models", [])
+    if not model_cfgs:
+        raise SystemExit("no benchmark.models found in config")
+    _apply_protocol(model_cfgs, protocol)
+    _load_models(model_cfgs)
 
     images = sorted(p for p in args.input_dir.iterdir() if p.suffix.lower() in SUPPORTED_EXT)
     if not images:
         raise SystemExit(f"no images in {args.input_dir}")
     images = images[: args.num + args.warmup]
 
-    seg_t: list[float] = []
-    depth_t: list[float] = []
-    geom_t: list[float] = []
-    total_t: list[float] = []
-    n_potholes_seen = 0
-
-    for i, img_path in enumerate(images):
-        image = cv2.imread(str(img_path))
-        if image is None:
-            continue
-
-        # --- end-to-end ---
-        t0 = time.perf_counter()
-        # --- seg ---
-        ts = time.perf_counter()
-        detections = pipeline.segmentor.predict(image)
-        seg_dt = time.perf_counter() - ts
-
-        # --- depth ---
-        ts = time.perf_counter()
-        depth_map = pipeline.depth_estimator.predict(image)
-        depth_dt = time.perf_counter() - ts
-
-        # --- geom (plane + offset + area + classify) ---
-        ts = time.perf_counter()
-        h, w = depth_map.shape
-        pc = depth_to_pointcloud(depth_map, pipeline.K)
-        plane = fit_road_plane(
-            pc, (h, w),
-            exclude_masks=[d.mask for d in detections],
-            threshold_m=float(plane_cfg.get("ransac_threshold_m", 0.02)),
-            max_iters=int(plane_cfg.get("max_iterations", 1000)),
-            min_inlier_ratio=float(plane_cfg.get("min_inlier_ratio", 0.7)),
-            min_points=int(plane_cfg.get("min_points", 1000)),
-            up_axis=tuple(plane_cfg.get("up_axis", (0.0, -1.0, 0.0))),
-            up_cos_threshold=float(plane_cfg.get("up_cos_threshold", 0.9)),
-        )
-        for det in detections:
-            if plane is not None:
-                compute_depth_offset(plane, pc, det.mask)
-            mask_to_area_m2(det.mask, pipeline.H_img2world)
-            n_potholes_seen += 1
-        geom_dt = time.perf_counter() - ts
-        total_dt = time.perf_counter() - t0
-
-        if i < args.warmup:
-            continue
-        seg_t.append(seg_dt)
-        depth_t.append(depth_dt)
-        geom_t.append(geom_dt)
-        total_t.append(total_dt)
-
-        if (len(total_t)) % 20 == 0:
-            logging.info(
-                "[%d/%d] total=%.1fms seg=%.1f depth=%.1f geom=%.1f",
-                len(total_t), args.num, total_dt * 1000, seg_dt * 1000, depth_dt * 1000, geom_dt * 1000,
-            )
-
-    report = {
+    report: dict[str, Any] = {
         "config": str(args.config),
         "input_dir": str(args.input_dir),
+        "protocol": protocol,
         "warmup": args.warmup,
-        "n_potholes_total": n_potholes_seen,
-        "stages": {
-            "seg": _summary(seg_t),
-            "depth": _summary(depth_t),
-            "geom": _summary(geom_t),
-            "total": _summary(total_t),
-        },
-        "fps_total_mean": (1.0 / statistics.mean(total_t)) if total_t else 0.0,
-        "fps_total_median": (1.0 / statistics.median(total_t)) if total_t else 0.0,
+        "num": args.num,
+        "repeats": args.repeats,
+        "seed": args.seed,
+        "environment": _environment_info(),
+        "models": [],
     }
+
+    coco_gt = None
+    if args.annotations:
+        from pycocotools.coco import COCO
+
+        coco_gt = COCO(str(args.annotations))
+
+    for model_cfg in model_cfgs:
+        per_repeat: list[dict[str, Any]] = []
+
+        for rep in range(args.repeats):
+            latencies: list[float] = []
+            coco_results: list[dict[str, Any]] = []
+            n_preds = 0
+
+            for i, img_path in enumerate(images):
+                image = cv2.imread(str(img_path))
+                if image is None:
+                    continue
+
+                if model_cfg["family"].lower() == "yolo":
+                    preds, dt = _run_yolo(model_cfg, image)
+                else:
+                    preds, dt = _run_mmdet(model_cfg, img_path)
+
+                if i >= args.warmup:
+                    latencies.append(dt)
+                n_preds += len(preds)
+
+                if coco_gt is not None:
+                    img_id = None
+                    for cid, meta in coco_gt.imgs.items():
+                        if Path(meta["file_name"]).name == img_path.name:
+                            img_id = cid
+                            break
+                    if img_id is None:
+                        continue
+                    for p in preds:
+                        mask = np.asarray(p["mask"], dtype=np.uint8)
+                        coco_results.append(
+                            {
+                                "image_id": img_id,
+                                "category_id": p["category_id"],
+                                "segmentation": _rle_encode(mask),
+                                "score": float(p["score"]),
+                            }
+                        )
+
+            rep_report: dict[str, Any] = {
+                "repeat_index": rep,
+                "latency": _summary(latencies),
+                "fps_mean": (1.0 / statistics.mean(latencies)) if latencies else 0.0,
+                "fps_median": (1.0 / statistics.median(latencies)) if latencies else 0.0,
+                "num_predictions": n_preds,
+            }
+
+            if coco_gt is not None and coco_results:
+                from pycocotools.cocoeval import COCOeval
+
+                coco_dt = coco_gt.loadRes(coco_results)
+                evaluator = COCOeval(coco_gt, coco_dt, iouType="segm")
+                evaluator.evaluate()
+                evaluator.accumulate()
+                evaluator.summarize()
+                precision = evaluator.eval.get("precision")
+                pr_curve = []
+                if precision is not None and precision.ndim == 5:
+                    # iou=0.5 (index 0), class=0, area=all(index 0), maxDets=100(index 2)
+                    pr = precision[0, :, 0, 0, 2]
+                    pr_curve = [float(x) if x >= 0 else None for x in pr.tolist()]
+
+                rep_report["coco_segm"] = {
+                    "mAP_50_95": float(evaluator.stats[0]),
+                    "mAP_50": float(evaluator.stats[1]),
+                    "mAP_75": float(evaluator.stats[2]),
+                    "AP_small": float(evaluator.stats[3]),
+                    "AP_medium": float(evaluator.stats[4]),
+                    "AP_large": float(evaluator.stats[5]),
+                    "pr_curve_iou50": pr_curve,
+                }
+            per_repeat.append(rep_report)
+
+        model_report: dict[str, Any] = {
+            "name": model_cfg["name"],
+            "family": model_cfg["family"],
+            "policy": {
+                "conf": model_cfg.get("conf"),
+                "iou": model_cfg.get("iou"),
+                "imgsz": model_cfg.get("imgsz"),
+                "device": model_cfg.get("device"),
+            },
+            "per_repeat": per_repeat,
+            "aggregate": {
+                "latency_mean_ms": _aggregate([float(r["latency"].get("mean_ms", 0.0)) for r in per_repeat]),
+                "fps_mean": _aggregate([float(r.get("fps_mean", 0.0)) for r in per_repeat]),
+                "mAP_50_95": _aggregate([float(r.get("coco_segm", {}).get("mAP_50_95", 0.0)) for r in per_repeat if "coco_segm" in r]),
+                "mAP_50": _aggregate([float(r.get("coco_segm", {}).get("mAP_50", 0.0)) for r in per_repeat if "coco_segm" in r]),
+            },
+        }
+        report["models"].append(model_report)
+
+        lat = model_report["aggregate"]["latency_mean_ms"]
+        fps = model_report["aggregate"]["fps_mean"]
+        logging.info(
+            "%s: latency_mean=%.1f±%.1f ms (95%%CI), fps=%.2f±%.2f",
+            model_cfg["name"],
+            lat.get("mean", 0.0),
+            lat.get("ci95", 0.0),
+            fps.get("mean", 0.0),
+            fps.get("ci95", 0.0),
+        )
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2))
     logging.info("wrote %s", args.output)
-    logging.info(
-        "end-to-end: mean=%.1f ms (%.1f FPS), median=%.1f ms (%.1f FPS), p95=%.1f ms",
-        report["stages"]["total"]["mean_ms"], report["fps_total_mean"],
-        report["stages"]["total"]["median_ms"], report["fps_total_median"],
-        report["stages"]["total"]["p95_ms"],
-    )
 
 
 if __name__ == "__main__":

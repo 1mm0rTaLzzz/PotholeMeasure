@@ -96,3 +96,52 @@ visualization:
     critical: [0, 0, 255]
   alpha: 0.5
   dpi: 300
+
+# Comparative benchmark for the paper:
+# "Real-time Pothole Instance Segmentation: A Comparative Study"
+benchmark:
+  protocol:
+    # Shared policy for strict apples-to-apples comparison.
+    conf: 0.25
+    iou: 0.5
+    imgsz: 1280
+    device: cuda
+    allow_model_overrides: false
+  models:
+    - name: yolov8s-pothole-seg
+      family: yolo
+      weights: experiments/checkpoints/seg/yolov8s-pothole-seg.pt
+      download:
+        source: huggingface
+        repo_id: keremberke/yolov8s-pothole-segmentation
+        filename: best.pt
+        out: experiments/checkpoints/seg/yolov8s-pothole-seg.pt
+    - name: yolov8m-pothole-seg
+      family: yolo
+      weights: experiments/checkpoints/seg/yolov8m-pothole-seg.pt
+      # If this repo/filename differs in your environment, update download.*.
+      download:
+        source: huggingface
+        repo_id: keremberke/yolov8m-pothole-segmentation
+        filename: best.pt
+        out: experiments/checkpoints/seg/yolov8m-pothole-seg.pt
+    - name: yolo11s-seg
+      family: yolo
+      weights: experiments/checkpoints/seg/yolo11s-seg.pt
+      # Fill this if your yolo11 checkpoint is hosted remotely.
+      # download:
+      #   source: url
+      #   url: https://.../yolo11s-seg.pt
+      #   out: experiments/checkpoints/seg/yolo11s-seg.pt
+    - name: RTMDet-Ins-s
+      family: mmdet
+      config: experiments/checkpoints/mmdet/rtmdet-ins_s.py
+      weights: experiments/checkpoints/mmdet/rtmdet-ins_s.pth
+    - name: SparseInst-R50
+      family: mmdet
+      config: experiments/checkpoints/mmdet/sparseinst_r50.py
+      weights: experiments/checkpoints/mmdet/sparseinst_r50.pth
+    - name: Mask2Former-Swin-T
+      family: mmdet
+      config: experiments/checkpoints/mmdet/mask2former_swin-t.py
+      weights: experiments/checkpoints/mmdet/mask2former_swin-t.pth

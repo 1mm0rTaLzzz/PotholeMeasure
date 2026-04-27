@@ -1,9 +1,14 @@
 # PotholeMeasure
 
-Pipeline for detecting road potholes and estimating their **depth** (as the
-offset from a RANSAC-fitted road plane over a monocular metric-depth map) and
-**area** (via a ground-plane homography to bird's-eye view). Potholes are
-classified by severity in accordance with **GOST R 50597-2017**.
+Current paper track: **Real-time Pothole Instance Segmentation: A Comparative Study**.
+
+We benchmark six instance-segmentation models in one protocol:
+
+- YOLO: `yolov8s-pothole-seg`, `yolov8m-pothole-seg`, `yolo11s-seg`
+- non-YOLO: `RTMDet-Ins-s`, `SparseInst-R50`, `Mask2Former-Swin-T`
+
+For this paper track, depth/homography analysis is excluded from the headline
+benchmark table and the focus is segmentation quality + inference latency.
 
 The main idea that makes the approach reliable with a single camera is to
 **never trust absolute monocular depth** — instead, fit a local road plane
@@ -62,7 +67,66 @@ experiments/
 tests/                         56 unit tests (see §Testing)
 ```
 
-## One-shot run for the paper (Windows PowerShell)
+## One-shot model comparison benchmark
+
+Configure model checkpoints in `configs/default.yaml` (`benchmark.models`), then run:
+
+```bash
+python scripts/benchmark.py \
+  --config configs/default.yaml \
+  --input-dir data/processed/test \
+  --annotations data/annotations/test.json \
+  --output experiments/results/paper/benchmark_6models.json
+```
+
+The report contains per-model latency summary (mean/median/p95), FPS and,
+if annotations are provided, COCO segm mAP.
+
+### End-to-end commands for paper artifacts (tables + figures)
+
+```bash
+# 1) Prepare / verify COCO split
+python scripts/prepare_data.py \
+  --rdd-root data/raw/RDD2022 \
+  --out-root data \
+  --generate-masks --sam2-model facebook/sam2-hiera-large
+
+# 2) Auto-fetch/validate benchmark model assets + write lock file
+python scripts/setup_benchmark_models.py \
+  --config configs/default.yaml \
+  --lock-file experiments/checkpoints/benchmark_lock.json
+
+# 3) Run repeated benchmark with shared protocol from `benchmark.protocol`
+#    (mean/std/95% CI for latency/FPS/mAP):
+python scripts/benchmark.py \
+  --config configs/default.yaml \
+  --input-dir data/processed/test \
+  --annotations data/annotations/test.json \
+  --num 300 --warmup 20 --repeats 5 --seed 42 \
+  --output experiments/results/paper/benchmark_6models.json
+
+# 4) Build paper-ready table/plots from benchmark JSON:
+python scripts/make_benchmark_artifacts.py \
+  --benchmark experiments/results/paper/benchmark_6models.json \
+  --out-dir experiments/results/paper
+
+# 5) Build qualitative side-by-side grids (same scenes, all 6 models):
+python scripts/make_qualitative_grid.py \
+  --config configs/default.yaml \
+  --input-dir data/processed/test \
+  --output-dir experiments/results/paper/qualitative \
+  --num-images 12
+```
+
+Generated files in `experiments/results/paper/`:
+- `benchmark_table.csv`
+- `benchmark_table.tex`
+- `benchmark_latency_fps.png`
+- `benchmark_speed_accuracy.png` (if mAP exists in JSON)
+- `qualitative/*.jpg` (per-image side-by-side comparison grids)
+- `../checkpoints/benchmark_lock.json` (reproducibility lock: hashes + package versions)
+
+## Legacy one-shot run for depth/area pipeline (Windows PowerShell)
 
 After `pip install -r requirements.txt`, drop your RDD2022 tree into
 `data\raw\RDD2022\` and run:
