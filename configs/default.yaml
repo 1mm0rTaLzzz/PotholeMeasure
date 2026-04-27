@@ -27,7 +27,7 @@ segmentation:
     # Fine-tuning from a pothole-pretrained checkpoint converges in ~20 epochs;
     # bump to 100 only when training from COCO weights.
     epochs: 30
-    batch_size: 16
+    batch_size: 8
     imgsz: 1280
     lr0: 0.001
     device: 0
