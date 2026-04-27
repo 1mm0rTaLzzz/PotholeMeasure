@@ -4,6 +4,10 @@ torchvision>=0.16.0
 
 # Segmentation
 ultralytics>=8.1.0
+# Non-YOLO segmentation backbones for comparative benchmark
+mmdet>=3.3.0
+mmengine>=0.10.0
+mmcv>=2.1.0
 
 # Depth estimation
 transformers>=4.40.0
