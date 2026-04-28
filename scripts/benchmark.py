@@ -69,6 +69,9 @@ def _rle_encode(mask: "np.ndarray") -> dict[str, Any]:
 
 
 def _run_yolo(model_cfg: dict[str, Any], image: "np.ndarray") -> tuple[list[dict[str, Any]], float]:
+    import cv2
+    import numpy as np
+
     model = model_cfg["_model"]
     ts = time.perf_counter()
     results = model.predict(
@@ -85,13 +88,23 @@ def _run_yolo(model_cfg: dict[str, Any], image: "np.ndarray") -> tuple[list[dict
     r0 = results[0]
     if r0.masks is None or len(r0.masks) == 0:
         return [], dt
-    masks = r0.masks.data.cpu().numpy().astype(bool)
+    # r0.masks.xy gives polygon contours in original-image pixel coordinates,
+    # guaranteed to match the original image resolution regardless of imgsz.
+    orig_h, orig_w = r0.orig_shape
     scores = r0.boxes.conf.cpu().numpy()
     labels = r0.boxes.cls.cpu().numpy().astype(int)
-    return [
-        {"mask": masks[i], "score": float(scores[i]), "category_id": int(labels[i]) + 1}
-        for i in range(len(masks))
-    ], dt
+    detections = []
+    for i, xy in enumerate(r0.masks.xy):
+        mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+        if len(xy) >= 3:
+            pts = xy.astype(np.int32).reshape((-1, 1, 2))
+            cv2.fillPoly(mask, [pts], 1)
+        detections.append({
+            "mask": mask.astype(bool),
+            "score": float(scores[i]),
+            "category_id": int(labels[i]) + 1,
+        })
+    return detections, dt
 
 
 def _run_mmdet(model_cfg: dict[str, Any], image_path: Path) -> tuple[list[dict[str, Any]], float]:
