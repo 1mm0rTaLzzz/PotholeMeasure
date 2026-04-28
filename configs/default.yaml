@@ -108,6 +108,15 @@ benchmark:
     device: cuda
     allow_model_overrides: false
   models:
+    - name: pothrgbd-yolov8s
+      family: yolo
+      weights: ../export/pothrgbd-yolov8s.pt
+    - name: pothrgbd-yolov8m
+      family: yolo
+      weights: ../export/pothrgbd-yolov8m.pt
+    - name: pothrgbd-yolo11s
+      family: yolo
+      weights: ../export/pothrgbd-yolo11s.pt
     - name: yolov8s-pothole-seg
       family: yolo
       weights: experiments/checkpoints/seg/yolov8s-pothole-seg.pt
